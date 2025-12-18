@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASL Master Translator</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <style>
+        :root { --primary: #00d2ff; --bg: #0f172a; --card: #1e293b; }
+        body {
+            margin: 0; padding: 20px; font-family: 'Segoe UI', sans-serif;
+            background-color: var(--bg); color: white;
+            display: flex; flex-direction: column; align-items: center;
+        }
+
+        .container { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; max-width: 1100px; }
+        
+        /* Video Section */
+        .video-box {
+            position: relative; width: 640px; height: 480px;
+            background: #000; border-radius: 15px; overflow: hidden;
+            border: 4px solid var(--card); box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+        }
+        #output_canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+
+        /* UI Controls */
+        .panel { width: 380px; display: flex; flex-direction: column; gap: 15px; }
+        .card { background: var(--card); padding: 20px; border-radius: 12px; text-align: center; border: 1px solid #334155; }
+        
+        #letter { font-size: 6rem; font-weight: 900; color: var(--primary); display: block; margin: 10px 0; }
+        
+        /* History Box */
+        .history-box { text-align: left; max-height: 150px; overflow-y: auto; background: #000; padding: 10px; border-radius: 5px; font-family: monospace; font-size: 1.2rem; color: #00ff88; word-break: break-all; }
+        
+        button {
+            background: var(--primary); border: none; padding: 10px; border-radius: 5px;
+            color: white; font-weight: bold; cursor: pointer; margin-top: 10px;
+        }
+        button:hover { opacity: 0.8; }
+        .hint { font-size: 0.8rem; color: #94a3b8; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+    <h2 style="color: var(--primary); margin-bottom: 10px;">ASL Talking Translator</h2>
+    <p class="hint">Click anywhere on the screen first to enable the voice engine!</p>
+
+    <div class="container">
+        <div class="video-box">
+            <video id="input_video" style="display:none;"></video>
+            <canvas id="output_canvas" width="640" height="480"></canvas>
+        </div>
+
+        <div class="panel">
+            <div class="card">
+                <span style="letter-spacing: 2px; color: #64748b;">CURRENT SIGN</span>
+                <span id="letter">-</span>
+                <div style="color: #10b981; font-size: 0.8rem;">🔊 Voice Active</div>
+            </div>
+
+            <div class="card">
+                <span style="color: #64748b;">SPELLED WORD</span>
+                <div id="history" class="history-box"></div>
+                <button onclick="clearHistory()">Clear Word</button>
+                <button onclick="addSpace()" style="background: #475569;">Add Space</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const letterDisplay = document.getElementById('letter');
+        const historyDisplay = document.getElementById('history');
+
+        let lastDetected = "";
+        let stableCount = 0; // Ensures the hand is still before "locking in" a letter
+
+        function speak(text) {
+            const msg = new SpeechSynthesisUtterance(text);
+            msg.rate = 1.2;
+            window.speechSynthesis.speak(msg);
+        }
+
+        window.clearHistory = () => { historyDisplay.innerText = ""; };
+        window.addSpace = () => { historyDisplay.innerText += " "; };
+
+        function getSign(landmarks) {
+            const thumbUp = landmarks[4].y < landmarks[3].y;
+            const indexUp = landmarks[8].y < landmarks[6].y;
+            const middleUp = landmarks[12].y < landmarks[10].y;
+            const ringUp = landmarks[16].y < landmarks[14].y;
+            const pinkyUp = landmarks[20].y < landmarks[18].y;
+
+            // Logic based on your ASL Alphabet Chart
+            if (indexUp && !middleUp && !ringUp && !pinkyUp && landmarks[4].x > landmarks[2].x) return "L";
+            if (indexUp && middleUp && !ringUp && !pinkyUp) return "V";
+            if (indexUp && middleUp && ringUp && !pinkyUp) return "W";
+            if (!indexUp && !middleUp && !ringUp && pinkyUp && landmarks[4].x > landmarks[2].x) return "Y";
+            if (indexUp && middleUp && ringUp && pinkyUp && landmarks[4].x < landmarks[2].x) return "B";
+            if (indexUp && !middleUp && !ringUp && !pinkyUp && landmarks[4].x < landmarks[2].x) return "D";
+            if (!indexUp && !middleUp && !ringUp && pinkyUp && landmarks[4].x < landmarks[2].x) return "I";
+            if (!indexUp && !middleUp && !ringUp && !pinkyUp && landmarks[4].x < landmarks[3].x) return "A";
+            
+            return "...";
+        }
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00d2ff', lineWidth: 4});
+                drawLandmarks(canvasCtx, landmarks, {color: '#fff', lineWidth: 1, radius: 2});
+
+                const currentSign = getSign(landmarks);
+                letterDisplay.innerText = currentSign;
+
+                // Stability Check: Only "type" and "speak" if the sign is held for 15 frames
+                if (currentSign !== "..." && currentSign !== lastDetected) {
+                    stableCount++;
+                    if (stableCount > 15) {
+                        speak(currentSign);
+                        historyDisplay.innerText += currentSign;
+                        lastDetected = currentSign;
+                        stableCount = 0;
+                    }
+                } else if (currentSign === "...") {
+                    stableCount = 0;
+                    lastDetected = "";
+                }
+            } else {
+                letterDisplay.innerText = "-";
+                lastDetected = "";
+            }
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        camera.start();
+
+        // Required to unblock Audio context in browsers
+        document.body.onclick = () => { console.log("Audio Unlocked"); };
+    </script>
+</body>
+</html>
